@@ -1,0 +1,4 @@
+requests~=2.32.3
+
+# load jeffrey library from Git (via SSH)
+git+ssh://git@github.com/the3rdPoliceman/jeffrey.git#egg=jeffrey
