@@ -72,3 +72,4 @@ env/
 
 # Plant notifier state
 plant_status.json
+/logs/*.log
