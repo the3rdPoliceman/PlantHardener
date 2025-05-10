@@ -11,8 +11,10 @@ This project automates the process of hardening your plants by monitoring local 
 
 
 ##  Installation
-1.  Clone or download this repository
-2. Install dependencies with `pip install -r requirements.txt`
+1. Clone or download this repository
+2. In the directory, run `python3 -m venv venv` to set up the venv
+3. Run `source venv/bin/activate` to activate the venv
+4. Install dependencies with `pip install -r requirements.txt`
 
 
 ##  Reinstalling Required Libraries after updating Jeffrey
