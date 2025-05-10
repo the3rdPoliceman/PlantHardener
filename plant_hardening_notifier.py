@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Plant hardening notifier (refactored for testability).
+Plant hardening notifier with console logging.
 
-Provides functions to load/save state, fetch weather, compute forecasts,
-make move decisions, and send notifications via Jeffrey.
+Checks current and forecast temperatures via Open-Meteo API and sends push notifications
+using the `jeffrey` library when plants should be moved inside or outside.
+Includes print statements for cron log monitoring.
 
-Run main() every 30 minutes via cron.
+Run every 30 minutes via cron.
 """
 import os
 import json
@@ -22,130 +23,143 @@ STATE_FILE = os.path.join(os.path.dirname(__file__), "plant_status.json")
 TIMEZONE = "Europe/Zurich"
 
 
-def load_status(file_path=STATE_FILE):
-    """Load last-known plant location: 'inside' or 'outside'."""
-    try:
-        with open(file_path) as f:
-            return json.load(f).get('status', 'inside')
-    except (FileNotFoundError, json.JSONDecodeError):
-        return 'inside'
+def load_status():
+    """Load the last-known plant location: 'inside' or 'outside'."""
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, 'r') as f:
+            data = json.load(f)
+            status = data.get('status', 'inside')
+            print(f"[INFO] Loaded status from file: {status}")
+            return status
+    print("[INFO] No status file found, defaulting to 'inside'.")
+    return 'inside'
 
 
-def save_status(status, file_path=STATE_FILE):
+def save_status(status: str):
     """Persist the new plant location status."""
-    with open(file_path, 'w') as f:
+    with open(STATE_FILE, 'w') as f:
         json.dump({'status': status}, f)
+    print(f"[INFO] Saved new status: {status}")
 
 
-def fetch_weather(latitude=LATITUDE, longitude=LONGITUDE, timezone=TIMEZONE):
-    """Retrieve hourly temperature from Open-Meteo."""
-    resp = requests.get(
-        "https://api.open-meteo.com/v1/forecast",
-        params={
-            'latitude': latitude,
-            'longitude': longitude,
-            'hourly': 'temperature_2m',
-            'timezone': timezone,
-        }
-    )
+def fetch_weather():
+    """Retrieve current and hourly forecast temperatures from Open-Meteo."""
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        'latitude': LATITUDE,
+        'longitude': LONGITUDE,
+        'hourly': 'temperature_2m',
+        'current_weather': 'true',
+        'timezone': TIMEZONE,
+    }
+    print("[INFO] Fetching weather data from Open-Meteo...")
+    resp = requests.get(url, params=params)
     resp.raise_for_status()
+    print("[INFO] Weather data fetched successfully.")
     return resp.json()
 
 
-def extract_forecast_temps(data, now=None, horizon_hours=FORECAST_HOURS):
+def extract_forecast_temps(data, now):
     """
-    Extract forecast temperatures:
-      - Before 23:00: next `horizon_hours` hours starting at the next full hour (or current if on the hour).
-      - At/after 23:00: from next full hour until 06:00 next day.
+    Build a list of forecast temperatures:
+      - If before 23:00, next FORECAST_HOURS hours.
+      - If at or after 23:00, from the next hour until 06:00 next morning.
     """
-    if now is None:
-        now = datetime.now()
     times = data['hourly']['time']
     temps = data['hourly']['temperature_2m']
     forecast = []
 
-    # Round up to next full hour
     base = now.replace(minute=0, second=0, microsecond=0)
     if now.minute > 0:
         base += timedelta(hours=1)
+    print(f"[INFO] Base time for forecast: {base.isoformat()}")
 
-    if now.hour < 23:
-        # Next horizon_hours hours include base + 0..horizon_hours-1
-        for i in range(horizon_hours):
-            t = base + timedelta(hours=i)
-            key = t.strftime("%Y-%m-%dT%H:%M")
-            if key in times:
-                forecast.append(temps[times.index(key)])
-    else:
-        # Night window: from next full hour until 06:00 next day
-        end = (base + timedelta(days=1)).replace(hour=6)
+    if now.hour >= 23:
+        end = (base + timedelta(days=1)).replace(hour=8)
         for t_str, t_val in zip(times, temps):
             t = datetime.fromisoformat(t_str)
             if base <= t <= end:
                 forecast.append(t_val)
-
-    return forecast
-
-
-def decide_action(status, forecast, now=None):
-    """
-    Decide next status and notification message based
-    on current status, forecast list, and optional now.
-    Returns (new_status, message) or (status, None).
-    """
-    if now is None:
-        now = datetime.now()
-    new_status = status
-    message = None
-
-    # Day-time before 23:00
-    if now.hour < 23:
-        if status == 'inside' and forecast and all(t > THRESHOLD_C for t in forecast):
-            new_status = 'outside'
-            message = (
-                f"The next {len(forecast)} hours are forecast above {THRESHOLD_C:.1f}°C; "
-                "move the plants outside."
-            )
-        elif status == 'outside' and forecast and all(t < THRESHOLD_C for t in forecast):
-            new_status = 'inside'
-            message = (
-                f"The next {len(forecast)} hours are forecast below {THRESHOLD_C:.1f}°C; "
-                "bring the plants inside."
-            )
-    # Night-time at/after 23:00
+        print(f"[INFO] Night forecast window until {end.isoformat()} retrieved.")
     else:
-        if status == 'inside' and forecast and all(t > THRESHOLD_C for t in forecast):
-            new_status = 'outside'
-            message = (
-                f"Tonight's temperatures will stay above {THRESHOLD_C:.1f}°C; "
-                "you can leave the plants outside."
-            )
-        elif status == 'outside' and forecast and not all(t > THRESHOLD_C for t in forecast):
-            new_status = 'inside'
-            message = (
-                f"Tonight's temperatures will dip below {THRESHOLD_C:.1f}°C; "
-                "bring the plants inside."
-            )
-    return new_status, message
+        for i in range(1, FORECAST_HOURS + 1):
+            t = base + timedelta(hours=i)
+            key = t.strftime("%Y-%m-%dT%H:%M")
+            if key in times:
+                forecast.append(temps[times.index(key)])
+        print(f"[INFO] Day forecast for next {FORECAST_HOURS} hours retrieved.")
 
-
-def send_notification(message):
-    """Send push notification via Jeffrey."""
-    notification.send_push_to_jeffrey_notifications(
-        message,
-        title="Plant Hardening Reminder"
-    )
+    print(f"[INFO] Forecast temperatures: {forecast}")
+    return forecast
 
 
 def main():
     now = datetime.now()
-    data = fetch_weather()
-    forecast = extract_forecast_temps(data, now)
-    status = load_status()
-    new_status, message = decide_action(status, forecast, now)
-    if message:
-        send_notification(message)
-        save_status(new_status)
+    print(f"[START] Plant notifier run at {now.isoformat()}")
+    try:
+        weather = fetch_weather()
+        current_temp = weather['current_weather']['temperature']
+        print(f"[INFO] Current temperature: {current_temp}°C")
+        forecast = extract_forecast_temps(weather, now)
+        status = load_status()
+        print(f"[INFO] Current status: {status}")
+        new_status = status
+        message = None
+
+        # Night-time logic
+        if now.hour >= 23:
+            print("[INFO] Using night-time logic.")
+            if all(t > THRESHOLD_C for t in forecast) and status == 'inside':
+                new_status = 'outside'
+                message = (
+                    f"Tonight's temperatures will stay above {THRESHOLD_C:.1f}°C; "
+                    "you can leave the plants outside."
+                )
+            elif any(t < THRESHOLD_C for t in forecast) and status == 'outside':
+                new_status = 'inside'
+                message = (
+                    f"Tonight's temperatures will fall below {THRESHOLD_C:.1f}°C; "
+                    "bring the plants inside."
+                )
+        # Day-time logic
+        else:
+            print("[INFO] Using day-time logic.")
+            if (
+                forecast
+                and status == 'inside'
+                and all(t > THRESHOLD_C for t in forecast)
+            ):
+                new_status = 'outside'
+                message = (
+                    f"The next {FORECAST_HOURS} hours are forecast above {THRESHOLD_C:.1f}°C; "
+                    "move the plants outside."
+                )
+            elif (
+                forecast
+                and status == 'outside'
+                and all(t < THRESHOLD_C for t in forecast)
+            ):
+                new_status = 'inside'
+                message = (
+                    f"The next {FORECAST_HOURS} hours are forecast below {THRESHOLD_C:.1f}°C; "
+                    "bring the plants inside."
+                )
+
+        if message:
+            print(f"[NOTIFY] {message}")
+            notification.send_push_to_jeffrey_notifications(
+                message,
+                title="Plant Hardening Reminder"
+            )
+            print(f"[INFO] Changing status from {status} to {new_status}")
+            save_status(new_status)
+        else:
+            print(f"[INFO] No action needed. Status remains {status}.")
+
+    except Exception as e:
+        print(f"[ERROR] An error occurred: {e}")
+
+    print("[END] Run completed.")
 
 
 if __name__ == '__main__':
