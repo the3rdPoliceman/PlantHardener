@@ -75,7 +75,7 @@ def extract_forecast_temps(data, now):
     print(f"[INFO] Base time for forecast: {base.isoformat()}")
 
     if now.hour >= 23:
-        end = (base + timedelta(days=1)).replace(hour=8)
+        end = base + timedelta(hours=9)
         for t_str, t_val in zip(times, temps):
             t = datetime.fromisoformat(t_str)
             if base <= t <= end:
