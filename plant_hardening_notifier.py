@@ -11,6 +11,8 @@ Run every 30 minutes via cron.
 import os
 import json
 from datetime import datetime, timedelta
+
+import ftp
 import requests
 import notification  # assumes your Jeffrey library is exposed as `notification`
 
@@ -92,6 +94,16 @@ def extract_forecast_temps(data, now):
     print(f"[INFO] Forecast temperatures: {forecast}")
     return forecast
 
+def ftp_log_file_to_server():
+    try:
+        ftp.upload_file_to_dave_moore_ch(
+            local_path="logs/cron.log",
+            remote_path=f"plant_hardener.log"
+        )
+        print("Upload succeeded")
+    except Exception as e:
+        print("Upload failed:", e)
+
 
 def main():
     now = datetime.now()
@@ -155,6 +167,8 @@ def main():
             save_status(new_status)
         else:
             print(f"[INFO] No action needed. Status remains {status}.")
+
+        ftp_log_file_to_server()
 
     except Exception as e:
         print(f"[ERROR] An error occurred: {e}")
